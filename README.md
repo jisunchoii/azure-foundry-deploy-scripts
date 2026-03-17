@@ -31,6 +31,10 @@ Phase 6  모델 배포 (인터랙티브 선택 + SKU 선택)
 - **SKU**: 모델별 지원 SKU (GlobalStandard, Standard, DataZoneStandard 등) 표시 및 선택
 - Deprecated / 3rd-party Marketplace 모델은 자동 필터링
 
+### Demo
+
+![demo](images/demo.gif)
+
 ## 사전 요구사항
 
 - [Azure CLI](https://learn.microsoft.com/cli/azure/install-azure-cli) 설치
