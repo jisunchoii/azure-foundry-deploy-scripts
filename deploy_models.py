@@ -20,12 +20,30 @@ import time
 
 CONFIG_FILE = ".foundry_config.json"
 RESOURCE_GROUP = "foundry-code"
-LOCATION = "swedencentral"
 PROJECT_NAME = "default-project"
 API_VERSION = "2025-04-01-preview"
 
 AUTO_YES = "--yes" in sys.argv or "-y" in sys.argv
 IS_WINDOWS = sys.platform == "win32"
+
+# AI Foundry를 지원하는 주요 리전
+AVAILABLE_REGIONS = [
+    "swedencentral",
+    "eastus",
+    "eastus2",
+    "westus",
+    "westus3",
+    "northcentralus",
+    "southcentralus",
+    "westeurope",
+    "francecentral",
+    "uksouth",
+    "japaneast",
+    "australiaeast",
+    "canadaeast",
+    "koreacentral",
+    "norwayeast",
+]
 
 
 # ═══════════════════════════════════════════════
@@ -116,23 +134,45 @@ def preflight_check():
     return account["id"]
 
 
+def select_region() -> str:
+    """배포 리전 선택"""
+    if AUTO_YES:
+        return AVAILABLE_REGIONS[0]
+
+    print("\n📍 배포 리전을 선택하세요:\n")
+    for i, r in enumerate(AVAILABLE_REGIONS, 1):
+        print(f"   {i:>2d}) {r}")
+    print()
+
+    while True:
+        raw = input(f"   번호 입력 (기본: 1 — {AVAILABLE_REGIONS[0]}): ").strip()
+        if not raw:
+            print(f"   → {AVAILABLE_REGIONS[0]}")
+            return AVAILABLE_REGIONS[0]
+        if raw.isdigit() and 1 <= int(raw) <= len(AVAILABLE_REGIONS):
+            selected = AVAILABLE_REGIONS[int(raw) - 1]
+            print(f"   → {selected}")
+            return selected
+        print(f"   ⚠️  1~{len(AVAILABLE_REGIONS)} 사이 번호를 입력하세요.")
+
+
 # ═══════════════════════════════════════════════
 #  Phase 2: Resource Group 생성
 # ═══════════════════════════════════════════════
-def create_resource_group():
+def create_resource_group(location: str):
     banner("Phase 1 · Resource Group 생성")
     run_az([
         "group", "create",
         "--name", RESOURCE_GROUP,
-        "--location", LOCATION,
+        "--location", location,
         "--output", "table"
-    ], f"Resource Group '{RESOURCE_GROUP}' 생성 ({LOCATION})")
+    ], f"Resource Group '{RESOURCE_GROUP}' 생성 ({location})")
 
 
 # ═══════════════════════════════════════════════
 #  Phase 3: Foundry (AIServices) 리소스 생성
 # ═══════════════════════════════════════════════
-def create_foundry_resource(subscription_id: str):
+def create_foundry_resource(subscription_id: str, location: str):
     banner("Phase 2 · Foundry 리소스 생성")
 
     suffix = "".join(random.choices(string.ascii_lowercase + string.digits, k=6))
@@ -146,7 +186,7 @@ def create_foundry_resource(subscription_id: str):
         f"?api-version={API_VERSION}"
     )
     body = {
-        "location": LOCATION,
+        "location": location,
         "kind": "AIServices",
         "sku": {"name": "S0"},
         "identity": {"type": "SystemAssigned"},
@@ -173,7 +213,7 @@ def create_foundry_resource(subscription_id: str):
 # ═══════════════════════════════════════════════
 #  Phase 4: Foundry Project 생성
 # ═══════════════════════════════════════════════
-def create_foundry_project(foundry_id: str):
+def create_foundry_project(foundry_id: str, location: str):
     banner("Phase 3 · Foundry Project 생성")
     print("⏳ Foundry 리소스 안정화 대기 (5초)...")
     time.sleep(5)
@@ -183,7 +223,7 @@ def create_foundry_project(foundry_id: str):
         f"/projects/{PROJECT_NAME}?api-version={API_VERSION}"
     )
     body = {
-        "location": LOCATION,
+        "location": location,
         "identity": {"type": "SystemAssigned"},
         "properties": {
             "friendlyName": PROJECT_NAME,
@@ -240,7 +280,8 @@ def assign_roles(foundry_id: str, subscription_id: str):
 #  Phase 5-b: Endpoint 조회 & 설정 파일 저장
 # ═══════════════════════════════════════════════
 def fetch_endpoint_and_save_config(foundry_name: str, foundry_id: str,
-                                    project_id: str, subscription_id: str):
+                                    project_id: str, subscription_id: str,
+                                    location: str):
     banner("Phase 5 · Endpoint 조회 & 설정 저장")
 
     # Endpoint 조회
@@ -271,7 +312,7 @@ def fetch_endpoint_and_save_config(foundry_name: str, foundry_id: str,
         "FOUNDRY_NAME": foundry_name,
         "PROJECT_NAME": PROJECT_NAME,
         "RESOURCE_GROUP": RESOURCE_GROUP,
-        "LOCATION": LOCATION,
+        "LOCATION": location,
         "AZURE_SUBSCRIPTION_ID": subscription_id,
         "TENANT_ID": tenant_id,
         "FOUNDRY_ID": foundry_id,
@@ -502,38 +543,41 @@ def main():
                 existing["FOUNDRY_NAME"],
                 existing["LOCATION"],
             )
-            print_summary(existing["FOUNDRY_NAME"], deployed or [])
+            print_summary(existing["FOUNDRY_NAME"], deployed or [], existing["LOCATION"])
             return
 
     # ── Phase 0: 사전 검증 ──
     subscription_id = preflight_check()
 
+    # ── 리전 선택 ──
+    location = select_region()
+
     # ── Phase 1: Resource Group ──
-    create_resource_group()
+    create_resource_group(location)
 
     # ── Phase 2: Foundry 리소스 ──
-    foundry_name, foundry_id = create_foundry_resource(subscription_id)
+    foundry_name, foundry_id = create_foundry_resource(subscription_id, location)
 
     # ── Phase 3: Foundry Project ──
-    project_id = create_foundry_project(foundry_id)
+    project_id = create_foundry_project(foundry_id, location)
 
     # ── Phase 4: RBAC 역할 할당 (Keyless 인증) ──
     assign_roles(foundry_id, subscription_id)
 
     # ── Phase 5: Endpoint + 설정 파일 저장 ──
     config = fetch_endpoint_and_save_config(
-        foundry_name, foundry_id, project_id, subscription_id
+        foundry_name, foundry_id, project_id, subscription_id, location
     )
 
     # ── Phase 6: 모델 배포 ──
     deployed = []
     if confirm("모델 배포를 시작하시겠습니까?"):
-        deployed = deploy_all_models(RESOURCE_GROUP, foundry_name, LOCATION)
+        deployed = deploy_all_models(RESOURCE_GROUP, foundry_name, location)
 
-    print_summary(foundry_name, deployed)
+    print_summary(foundry_name, deployed, location)
 
 
-def print_summary(foundry_name: str, deployed: list = None):
+def print_summary(foundry_name: str, deployed: list = None, location: str = ""):
     if deployed is None:
         deployed = []
     print()
@@ -542,7 +586,7 @@ def print_summary(foundry_name: str, deployed: list = None):
     print("╠══════════════════════════════════════════════════════════╣")
     print(f"║  Foundry : {foundry_name:<45s}║")
     print(f"║  RG      : {RESOURCE_GROUP:<45s}║")
-    print(f"║  Location: {LOCATION:<45s}║")
+    print(f"║  Location: {location:<45s}║")
     print("╠══════════════════════════════════════════════════════════╣")
     if deployed:
         print("║  배포된 모델:                                          ║")
